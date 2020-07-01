@@ -7,11 +7,16 @@ open Argu
 open SFZip.polyCoords
 open MathNet.Numerics
 
-type SFZipFormats = CsvProvider<"sfzip_20200511.csv">
+type SFZipFormats = CsvProvider<"sfzip_example.csv">
+type SFZipFormatB = CsvProvider<"sfzipB_example.csv">
 type RateCsv = CsvProvider<"rate_example.csv">
+
+type DataFormat = Classic | FormatB
 
 type CLIArguments =
     | Convert of string
+    | ConvertB of string
+    | Classic
     | Fit
     | Draw
     | Test
@@ -19,16 +24,18 @@ with
     interface IArgParserTemplate with
         member s.Usage =
             match s with
+            | Classic -> "use original data format vs B format"
             | Convert _ -> "convert raw zip data to coordinate list"
+            | ConvertB _ -> "convert B format raw zip data to coordinate list"
             | Draw -> "draw svg"
             | Fit -> "draw svg"
             | Test -> "debugging"
 
 
 
-type DataPoint = { Date : DateTime ; Zip: int ; Cases: int }
+type DataPoint = { AreaType : string ; Date : DateTime ; Area: string ; Cases: int }
 
-type RateData = { Id : int ; Rate : float ; Cases : int}
+type RateData = { Id : string ; Rate : float ; Cases : int}
 
 type RGB = {
     R:int
@@ -54,23 +61,47 @@ let main argv =
     let parser = ArgumentParser.Create<CLIArguments>(programName = "SFZip.exe")
     let args = parser.Parse argv
 
+    let format = if args.Contains Classic then DataFormat.Classic else FormatB
+
     if args.Contains Fit then
         printf "Fitting data"
-        let data = [|     for file in System.IO.Directory.EnumerateFiles(".","sfzip_20*.csv") do
+        let data = [|     for file in System.IO.Directory.EnumerateFiles(".", (match format with
+                                                                                    | DataFormat.Classic -> "sfzip_20*.csv"
+                                                                                    | FormatB -> "sfzipB_20*.csv"
+                                                                              )
+                             ) do
                                 printfn "  Processing %s" file
-                                for row in SFZipFormats.Parse(File.ReadAllText(file)).Rows do
-                                        yield { Zip = row.``ZIP Code`` ; Date = row.``Data as of`` ; Cases = (row.``Count of Confirmed Cases`` |> Option.ofNullable |> Option.defaultValue 0)}
-                    |] |> Array.distinctBy (fun x -> x.Zip,x.Date)
+                                match format with
+                                    | DataFormat.Classic ->
+                                        for row in SFZipFormats.Parse(File.ReadAllText(file)).Rows do
+                                            yield { AreaType = "zip" ; Area = string row.``ZIP Code`` ; Date = row.``Data as of`` ; Cases = (row.``Count of Confirmed Cases`` |> Option.ofNullable |> Option.defaultValue 0)}
+                                    | FormatB ->
+                                        for row in SFZipFormatB.Parse(File.ReadAllText(file)).Rows do
+                                            yield { AreaType= row.Area_type ; Area = string row.Id ; Date = row.Last_updated_at ; Cases = (row.Count |> Option.ofNullable |> Option.defaultValue 0)}
 
-        let lookupByZipAndDate = [| for x in data -> (x.Zip,x.Date),x.Cases |] |> Map.ofArray
+                    |] |> Array.filter (fun x -> x.Area <> "Citywide")
+                       |> Array.distinctBy (fun x -> x.Area,x.Date)
+
+        let lookupByZipAndDate = [| for x in data -> (x.Area,x.Date),x.Cases |] |> Map.ofArray
 
         let allDates = [| for x in data -> x.Date |] |> Array.distinct |> Array.sort
-        let allZips = [| for x in data -> x.Zip |] |> Array.distinct |> Array.sort
+        let allZips = [| for x in data -> x.Area |] |> Array.distinct |> Array.sort
         let badDates =
             [|  for i in 1..allDates.Length-1 do
                     let thisDate = allDates.[i].Date
                     let lastDate = allDates.[i-1].Date
-                    if allZips |> Array.forall (fun z -> lookupByZipAndDate.[(z,thisDate)] = lookupByZipAndDate.[z,lastDate]) then
+                    if allZips |> Array.forall (fun z ->
+                                                    if not <| lookupByZipAndDate.ContainsKey((z,thisDate)) then
+                                                        printfn " Missing zip/date %s/%s" z
+                                                            (thisDate.ToShortDateString())
+                                                        false
+                                                    elif not <| lookupByZipAndDate.ContainsKey((z,lastDate)) then
+                                                        printfn " Missing zip/date %s/%s" z
+                                                            (lastDate.ToShortDateString())
+                                                        false
+                                                    else
+                                                        lookupByZipAndDate.[(z,thisDate)] = lookupByZipAndDate.[z,lastDate]
+                                               ) then
                       yield thisDate // bad data point
             |] |> Set.ofArray
 
@@ -90,11 +121,11 @@ let main argv =
         outF2.Close()
 
         printfn "Selecting data"
-        let zipGroup = 
-            data 
-            |> Array.groupBy (fun x -> x.Zip) 
-            |> Array.choose (fun (zip,points) -> 
-                                    let usable = points |> Seq.filter(fun p->(not<| badDates.Contains p.Date) && p.Cases>0) 
+        let zipGroup =
+            data
+            |> Array.groupBy (fun x -> x.Area)
+            |> Array.choose (fun (zip,points) ->
+                                    let usable = points |> Seq.filter(fun p->(not<| badDates.Contains p.Date) && p.Cases>0)
                                     if Seq.length usable >= 2 then Some (zip,points) else None
                             )
 
@@ -106,11 +137,11 @@ let main argv =
                             let lastDate = sortedPoints.[sortedPoints.Length-1].Date
                             let earliest = sortedPoints.[sortedPoints.Length-2].Date |> min (lastDate.AddDays(-7.0))
                             let usedPoints = sortedPoints |> Array.filter(fun x -> x.Date>=earliest)
-                            // printfn "zip %d: last=%s penultimate=%s earliest=%s %d points available"  
-                            //     zip 
-                            //     (lastDate.ToShortDateString()) 
+                            // printfn "zip %d: last=%s penultimate=%s earliest=%s %d points available"
+                            //     zip
+                            //     (lastDate.ToShortDateString())
                             //     (points.[points.Length-2].Date.ToShortDateString())
-                            //     (earliest.ToShortDateString()) 
+                            //     (earliest.ToShortDateString())
                             //     usedPoints.Length
                             let x = [| for p in usedPoints -> (p.Date-earliest).TotalDays |]
                             let y = [| for p in usedPoints -> log10 (float p.Cases) |]
@@ -126,9 +157,9 @@ let main argv =
                                 None
                 )
         use outF = new StreamWriter("rates.csv")
-        outF.WriteLine("zip,rate,count")
+        outF.WriteLine("area,rate,count")
         for r in rates do
-            outF.WriteLine(sprintf "%d,%f,%d" r.Id r.Rate r.Cases)
+            outF.WriteLine(sprintf "%s,%f,%d" r.Id r.Rate r.Cases)
 
     if args.Contains Test then
         tests()
@@ -142,6 +173,22 @@ let main argv =
         for row in data.Rows do
             outF.WriteLine(sprintf "%d\t%s" row.``ZIP Code`` row.Multipolygon) // (String.Join(",",points)))
 
+    if args.Contains ConvertB then
+        let inFile = args.GetResult ConvertB
+
+        let data = SFZipFormatB.Parse(File.ReadAllText(inFile))
+        use outF = new StreamWriter("polygonsB.txt")
+        for row in data.Rows do
+            (*
+                41 Analysis Neighborhood
+                195 Census Tract
+                  1 Citywide
+                 27 ZCTA
+            *)
+            //if row.Area_type <> "Citywide" then
+            let region = row.Id
+            outF.WriteLine(sprintf "%s\t%s" region row.Multipolygon)
+
     let floatCheck (s:string) =
         match Double.TryParse s with
         | false,_ ->
@@ -150,16 +197,19 @@ let main argv =
 
     if args.Contains Draw then
         printf "Drawing data"
-        let zips =
-            [| for row in File.ReadAllLines("polygons.txt") ->
+        let areas =
+            [| for row in File.ReadAllLines("polygonsB.txt") ->
                 let cols = row.Split([|'\t'|])
+                printfn "   processing poly %s" (cols.[0])
                 let coords = parsePOLYGON (cols.[1])
-                {   Zipcode = cols.[0] |> int
+                printfn "   got coords for %s" (cols.[0])
+                {   Area = cols.[0]
                     Outline = coords
                 }
 
             |]
 
+        printfn "Got areas"
         use outF = new StreamWriter("sfzip.html")
 
         let rec walk (c:CoordSet) =
@@ -171,10 +221,11 @@ let main argv =
                 }
 
         let allCoords = seq {
-                            for z in zips do
+                            for z in areas do
                                 yield! walk z.Outline
                         } |> Array.ofSeq
 
+        printfn "Got coords"
         let minLat = allCoords |> Array.minBy (fun x -> x.Lat)
         let maxLat = allCoords |> Array.maxBy (fun x -> x.Lat)
         let minLon = allCoords |> Array.minBy (fun x -> x.Lon)
@@ -189,6 +240,7 @@ let main argv =
         let toX x = (x-minLon.Lon)*scaleX+margin
         let toY y = height-margin-(y-minLat.Lat)*scaleY
 
+        printfn "writing sfzip.html"
         outF.WriteLine("""<html>
                        <head>
   <link rel="stylesheet" type="text/css" href="tooltipster.bundle.min.css"/>
@@ -208,6 +260,7 @@ let main argv =
         outF.WriteLine(sprintf "<svg viewBox=\"0 0 %f %f\">" width height)
 
         let rec draw id (label:string) (color:RGB) (c:CoordSet) =
+            printfn "    drawing %s" label
             match c with
             | Single s ->
                 let start = List.head s
@@ -224,17 +277,26 @@ let main argv =
                 draw id' label color b
 
         let rates = // rateData.Split([|'\n'|]) |> Array.map (fun row -> row.Trim().Split([|' ';'\t'|],StringSplitOptions.RemoveEmptyEntries)) |> Array.map(fun cols -> {Id = int (cols.[0])  ; Rate = float (cols.[1])})
-            [| for row in RateCsv.Parse(File.ReadAllText("rates.csv")).Rows -> {Id = row.Zip ; Rate = row.Rate |> float ; Cases = row.Cases} |]
+            [| for row in RateCsv.Parse(File.ReadAllText("rates.csv")).Rows -> {Id = row.Area ; Rate = row.Rate |> float ; Cases = row.Cases} |]
         let rateLookups = [for r in rates -> r.Id,r.Rate] |> Map.ofList
         let caseLookups = [for r in rates -> r.Id,r.Cases] |> Map.ofList
 
 
-        for z in zips do
-            let rgb = rateLookups.TryFind z.Zipcode |> Option.map lookupColor |> Option.defaultValue white
-            let rate = match rateLookups.TryFind z.Zipcode with | Some x -> (x-1.0)*100.0 | None -> 0.0
-            let cases = caseLookups.TryFind z.Zipcode |> Option.defaultValue 0
-            // let rate = rateLookups.TryFind z.Zipcode |> Option.defaultValue 0.0
-            let label = sprintf "zip:%d rate=%3.2f%% cases=%d" z.Zipcode rate cases
+        let sort1 = fun (z:Zip) ->
+                match rateLookups.TryFind z.Area with | Some x -> (x-1.0)*100.0 | None -> 0.0
+        let sort2 = fun (z:Zip) ->
+                        let rate = match rateLookups.TryFind z.Area with | Some x -> (x-1.0)*100.0 | None -> 0.0
+                        if rate = 0.0 then -4.0
+                        elif z.Area.StartsWith("060") then -1.0+rate
+                        elif z.Area.StartsWith("9") then -2.0+rate
+                        else -3.0+rate
+
+        for z in areas |> Array.sortBy sort2 do
+            let rgb = rateLookups.TryFind z.Area |> Option.map lookupColor |> Option.defaultValue white
+            let rate = match rateLookups.TryFind z.Area with | Some x -> (x-1.0)*100.0 | None -> 0.0
+            let cases = caseLookups.TryFind z.Area |> Option.defaultValue 0
+            printfn "Processing area %s rate=%f cases=%d" z.Area rate cases
+            let label = sprintf "area:%s rate=%3.2f%% cases=%d" z.Area rate cases
             outF.WriteLine(sprintf """<g class="tooltip" title="%s" >""" label)
             draw 1 label rgb z.Outline |> ignore
             outF.WriteLine(sprintf """</g>""")
