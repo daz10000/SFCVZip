@@ -137,12 +137,13 @@ let main argv =
                             let lastDate = sortedPoints.[sortedPoints.Length-1].Date
                             let earliest = sortedPoints.[sortedPoints.Length-2].Date |> min (lastDate.AddDays(-7.0))
                             let usedPoints = sortedPoints |> Array.filter(fun x -> x.Date>=earliest)
-                            // printfn "zip %d: last=%s penultimate=%s earliest=%s %d points available"
-                            //     zip
-                            //     (lastDate.ToShortDateString())
-                            //     (points.[points.Length-2].Date.ToShortDateString())
-                            //     (earliest.ToShortDateString())
-                            //     usedPoints.Length
+                            printfn "zip %s: last=%s penultimate=%s earliest=%s %d points available %A"
+                                 zip
+                                 (lastDate.ToShortDateString())
+                                 (points.[points.Length-2].Date.ToShortDateString())
+                                 (earliest.ToShortDateString())
+                                 usedPoints.Length
+                                 [| for p in usedPoints -> p.Cases|]
                             let x = [| for p in usedPoints -> (p.Date-earliest).TotalDays |]
                             let y = [| for p in usedPoints -> log10 (float p.Cases) |]
                             if x.Length >= 2 then
@@ -150,7 +151,7 @@ let main argv =
                                 Some
                                     {   Rate = 10.0**m
                                         Id = zip
-                                        Cases = points.[points.Length-1].Cases
+                                        Cases = usedPoints.[usedPoints.Length-1].Cases
                                     }
                             else
                                 // not enough points to fit
@@ -276,7 +277,7 @@ let main argv =
                 let id' = draw id label color a
                 draw id' label color b
 
-        let rates = // rateData.Split([|'\n'|]) |> Array.map (fun row -> row.Trim().Split([|' ';'\t'|],StringSplitOptions.RemoveEmptyEntries)) |> Array.map(fun cols -> {Id = int (cols.[0])  ; Rate = float (cols.[1])})
+        let rates = 
             [| for row in RateCsv.Parse(File.ReadAllText("rates.csv")).Rows -> {Id = row.Area ; Rate = row.Rate |> float ; Cases = row.Cases} |]
         let rateLookups = [for r in rates -> r.Id,r.Rate] |> Map.ofList
         let caseLookups = [for r in rates -> r.Id,r.Cases] |> Map.ofList
