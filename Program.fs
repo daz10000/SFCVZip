@@ -117,7 +117,13 @@ let main argv =
         for date in allDates do
             if not <| badDates.Contains date then
                 outF2.Write(date)
-                outF2.WriteLine(","+String.Join(",",[| for z in allZips -> lookupByZipAndDate.[(z,date)] |> string |]))
+                outF2.WriteLine(","+String.Join(",",[| for z in allZips do
+                                                        match lookupByZipAndDate.TryFind (z,date) with
+                                                        | Some v -> yield string v
+                                                        | None ->
+                                                            printfn "Warning: unable to find %s %A" z date
+                                                    
+                                                    |]))
         outF2.Close()
 
         printfn "Selecting data"
